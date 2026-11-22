@@ -689,6 +689,17 @@
             transition: all 0.15s; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
         }
         .btn-edit:hover { color: #5dba82; border-color: var(--green); background: rgba(39,174,96,0.12); }
+        .sp-choices { display: grid; gap: 10px; }
+        .sp-choice {
+            display: block; width: 100%; text-align: left; cursor: pointer; padding: 13px 15px;
+            background: var(--surface2); color: var(--text); border: 1px solid var(--border2); border-radius: 10px;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .sp-choice:hover:not(:disabled) { border-color: var(--green); background: rgba(39,174,96,0.10); }
+        .sp-choice:disabled { opacity: 0.5; cursor: not-allowed; }
+        .sp-primary { border-color: rgba(39,174,96,0.6); }
+        .sp-t { display: block; font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 1.15em; letter-spacing: 0.06em; text-transform: uppercase; }
+        .sp-d { display: block; font-size: 0.8em; line-height: 1.45; color: var(--text-dim); margin-top: 3px; }
         .he-hint { font-size: 0.74em; line-height: 1.45; color: var(--text-mute); }
         .he-warn { color: #ef5350; font-size: 0.8em; display: none; }
 
@@ -2369,6 +2380,7 @@
                     settings.ghToken    = s.ghToken  || '';
                     settings.ghRemember = s.ghRemember !== false;
                     settings.yeastReminder = s.yeastReminder !== false;
+                    settings.storagePrompted = s.storagePrompted === true;
                     if (s.baseWater && typeof s.baseWater === 'object') settings.baseWater = s.baseWater;
                 }
             } catch(e) {}
@@ -2811,14 +2823,16 @@
             }).catch(function() { return null; });
         }
 
+        // Resolves true once a folder is linked, false if nothing was linked (cancelled, or not possible)
         function chooseFolder() {
             if (!folderSupported()) {
-                setOptStatus('This browser cannot open a folder directly. Use Export / Import instead.', true);
-                return;
+                setOptStatus('This browser cannot open a folder directly. Use Chrome or Edge on a computer, or Export / Import.', true);
+                return Promise.resolve(false);
             }
-            window.showDirectoryPicker({ mode: 'readwrite', id: 'brewworks' }).then(function(h) {
+            return window.showDirectoryPicker({ mode: 'readwrite', id: 'brewworks' }).then(function(h) {
                 _dirHandle = h;
                 settings.storageMode = 'folder';
+                settings.storagePrompted = true;
                 settings.folderName = h.name || 'folder';
                 // Remembering the handle is a convenience; if the browser refuses to
                 // store it the folder still works for this session.
@@ -2830,18 +2844,50 @@
                 renderOptions();
                 setOptStatus(ok ? ('Linked. Writing ' + DATA_FILE + ' to "' + settings.folderName + '".')
                                 : 'Folder linked, but the file could not be written yet.', !ok);
+                return true;
             }).catch(function(e) {
-                if (e && e.name === 'AbortError') return;
+                if (e && e.name === 'AbortError') return false;
                 setOptStatus('Could not open that folder: ' + (e && e.message ? e.message : e), true);
+                return false;
             });
+        }
+
+        // -- First-use prompt ------------------------------------------------------------
+        // Asked once, and only of someone with nothing saved yet. Anyone who already has recipes, a brew in
+        // progress or a storage choice is simply marked as asked.
+        function maybeAskStorage() {
+            if (settings.storagePrompted) return;
+            var hasData = false;
+            try { hasData = readRecipes().length > 0 || !!localStorage.getItem(SESSION_KEY); } catch (e) {}
+            if (hasData || settings.storageMode !== 'local') { settings.storagePrompted = true; saveSettings(); return; }
+            var fb = document.getElementById('sp-folder'), note = document.getElementById('sp-note');
+            fb.disabled = !folderSupported();
+            note.innerText = folderSupported() ? '' : 'Choosing a folder needs Chrome or Edge on a computer. Your recipes will be kept in this browser.';
+            document.getElementById('storage-prompt-overlay').style.display = 'flex';
+            (folderSupported() ? fb : document.getElementById('sp-browser')).focus();
+        }
+
+        function closeStoragePrompt() {
+            document.getElementById('storage-prompt-overlay').style.display = 'none';
+        }
+
+        function storagePromptFolder() {
+            chooseFolder().then(function(linked) { if (linked) closeStoragePrompt(); });   // cancelled: stay on the question
+        }
+
+        function storagePromptBrowser() {
+            settings.storagePrompted = true;
+            saveSettings();
+            closeStoragePrompt();
         }
 
         function setStorageMode(mode) {
             if (mode === 'folder' && !folderSupported()) {
-                setOptStatus('This browser has no folder access. Use GitHub Repo, or Export / Import.', true);
+                setOptStatus('This browser has no folder access. Use Browser + GitHub, or Export / Import.', true);
                 return;
             }
             settings.storageMode = (mode === 'folder' || mode === 'github') ? mode : 'local';
+            settings.storagePrompted = true;
             saveSettings();
             renderOptions();
             setOptStatus('');
@@ -7088,6 +7134,7 @@ var BA_STYLES = [
             loadCustomSounds();
             renderSequencePanel();
             checkForSavedSession();
+            maybeAskStorage();
             requestWakeLock();
             try {
                 if (sessionStorage.getItem('bw_new_recipe')) {
@@ -7299,6 +7346,27 @@ var BA_STYLES = [
                 <button class="timer-btn" id="hop-reset-yes" onclick="confirmHopReset()" style="background:var(--blue);min-width:90px;">YES</button>
                 <button class="timer-btn" onclick="closeHopReset()" style="background:var(--surface2);color:var(--text-dim);border:1px solid var(--border2);min-width:90px;box-shadow:none;">CANCEL</button>
             </div>
+        </div>
+    </div>
+
+    <!-- First use: where should recipes be kept? -->
+    <div id="storage-prompt-overlay" class="recipe-overlay" role="dialog" aria-modal="true" aria-labelledby="sp-title">
+        <div class="modal-box recipe-modal" style="max-width:480px;">
+            <div class="recipe-kicker">Welcome to GT BrewWorks</div>
+            <div class="recipe-heading" id="sp-title">Where should I keep your recipes?</div>
+            <div class="he-hint" style="margin-bottom:14px;">Your recipes are always saved in this browser. You can also keep a copy in a folder, so there is a file you can see, back up and move to another computer.</div>
+            <div class="sp-choices">
+                <button type="button" class="sp-choice sp-primary" id="sp-folder" onclick="storagePromptFolder()">
+                    <span class="sp-t">Choose a folder&hellip;</span>
+                    <span class="sp-d">Recommended. Pick any folder on this computer. A folder inside Dropbox, OneDrive or Google Drive also backs your recipes up and shares them with your other computers.</span>
+                </button>
+                <button type="button" class="sp-choice" id="sp-browser" onclick="storagePromptBrowser()">
+                    <span class="sp-t">Just this browser</span>
+                    <span class="sp-d">Nothing to set up. Clearing the browser's data deletes your recipes, and they stay on this one computer.</span>
+                </button>
+            </div>
+            <div class="he-hint" id="sp-note" style="margin-top:12px;"></div>
+            <div class="he-hint" style="margin-top:6px;">Change this any time in Options &rarr; Data Storage.</div>
         </div>
     </div>
 
@@ -7878,7 +7946,7 @@ var BA_STYLES = [
                 <div id="snd-body" style="display:none;">
                     <div class="opt-desc" style="margin:8px 0 4px;">Swap any tone for an audio file from your computer. Custom sounds repeat every 5 seconds, as many times as the tones do. Loudness follows the Alert Vol slider on the Timer tab.</div>
                     <div id="snd-rows"></div>
-                    <div class="opt-note" style="margin-top:8px;">Files are copied into this browser (10 MB each) and stay on this device; they are not part of the synced folder or GitHub data.</div>
+                    <div class="opt-note" style="margin-top:8px;">Files are copied into this browser (10 MB each) and stay on this device; they are not part of the folder or GitHub data.</div>
                 </div>
             </div>
 
@@ -7887,12 +7955,12 @@ var BA_STYLES = [
                 <div class="opt-row">
                     <div class="opt-info">
                         <div class="opt-name">Where data lives</div>
-                        <div class="opt-desc">Recipes, settings and the in-progress session. <strong>This device</strong> keeps everything in this browser only. <strong>Synced folder</strong> also writes a single <span class="opt-path">brewworks-data.json</span> into a folder you pick.</div>
+                        <div class="opt-desc">Recipes, settings and the brew in progress are always kept in this browser. <strong>Browser only</strong> stops there: there is no file to find, and clearing the browser's data deletes them. <strong>Browser + Folder</strong> also saves a file, <span class="opt-path">brewworks-data.json</span>, into a folder you choose. That can be any folder on this computer, or one inside Dropbox, OneDrive or Google Drive, which backs it up and carries it to your other computers. <strong>Browser + GitHub</strong> does the same into a GitHub repository.</div>
                     </div>
                     <div class="opt-choice">
-                        <button class="opt-btn active" id="opt-store-local" onclick="setStorageMode('local')">This Device</button>
-                        <button class="opt-btn" id="opt-store-folder" onclick="setStorageMode('folder')">Synced Folder</button>
-                        <button class="opt-btn" id="opt-store-github" onclick="setStorageMode('github')">GitHub Repo</button>
+                        <button class="opt-btn active" id="opt-store-local" onclick="setStorageMode('local')">Browser Only</button>
+                        <button class="opt-btn" id="opt-store-folder" onclick="setStorageMode('folder')">Browser + Folder</button>
+                        <button class="opt-btn" id="opt-store-github" onclick="setStorageMode('github')">Browser + GitHub</button>
                     </div>
                 </div>
                 <div class="opt-sub" id="opt-folder-box" style="display:none;">
@@ -7904,7 +7972,7 @@ var BA_STYLES = [
                         <button class="opt-btn" id="opt-pull-btn" onclick="pullFromFolder()">Load From Folder</button>
                     </div>
                     <div class="opt-note">
-                        Point this at a folder your cloud client already syncs &mdash; Dropbox, OneDrive, Google Drive or iCloud Drive. The desktop app handles the upload; this page just writes the file. Open the page on another machine, pick the same synced folder, and hit <strong>Load From Folder</strong>.
+                        Choose any folder you like. For a backup that follows you, pick one your cloud service already syncs (Dropbox, OneDrive, Google Drive, iCloud Drive): its app does the uploading and this page just writes the file. On another computer, open the page, choose the same folder and press <strong>Load From Folder</strong>.
                     </div>
                     <div class="opt-warn" id="opt-folder-warn" style="display:none;"></div>
                 </div>
